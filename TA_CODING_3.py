@@ -1,7 +1,6 @@
 """
-🗺️ WebGIS Pemanfaatan Ruang - GOOGLE DRIVE INTEGRATION
-Data utama + Google Drive Sync + Admin Panel
-✅ Flexible file naming + Google Drive upload/download
+🗺️ WebGIS Pemanfaatan Ruang - GOOGLE DRIVE INTEGRATION (v2)
+✅ Direct Load dari Google Drive + Local Fallback
 """
 
 import os
@@ -30,28 +29,36 @@ from PIL import Image
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 
-# Try to get FOLDER_ID dari secrets, default None jika tidak ada
+# FOLDER_ID - Ekstrak dari URL: https://drive.google.com/drive/folders/1dTdLnvUyRgFDKCSLLKH83ZOb2fou0Mci
+FOLDER_ID = "1dTdLnvUyRgFDKCSLLKH83ZOb2fou0Mci"
+
+# Cek apakah ada credentials di secrets
 try:
-    FOLDER_ID = st.secrets.get("FOLDER_ID", None)
-    USE_GOOGLE_DRIVE = FOLDER_ID is not None
+    has_credentials = "gcp_service_account" in st.secrets
+    USE_GOOGLE_DRIVE = has_credentials
 except:
     USE_GOOGLE_DRIVE = False
-    FOLDER_ID = None
 
 @st.cache_resource
 def get_drive_service():
-    """Get Google Drive service"""
+    """Get Google Drive service - dengan error handling"""
     try:
+        if not USE_GOOGLE_DRIVE:
+            return None
+            
         creds = service_account.Credentials.from_service_account_info(
             st.secrets["gcp_service_account"], scopes=SCOPES
         )
         return build("drive", "v3", credentials=creds)
-    except:
+    except Exception as e:
         return None
 
 def get_file_id(service, filename: str):
     """Cari file di folder Drive berdasarkan nama"""
     try:
+        if not service or not FOLDER_ID:
+            return None
+            
         results = service.files().list(
             q=f"name='{filename}' and '{FOLDER_ID}' in parents and trashed=false",
             fields="files(id, name)"
@@ -64,9 +71,13 @@ def get_file_id(service, filename: str):
 def download_from_drive(service, filename: str, dest_path: pathlib.Path) -> bool:
     """Download file dari Drive ke lokal"""
     try:
+        if not service:
+            return False
+            
         file_id = get_file_id(service, filename)
         if not file_id:
             return False
+            
         request = service.files().get_media(fileId=file_id)
         with open(dest_path, "wb") as f:
             downloader = MediaIoBaseDownload(f, request)
@@ -74,12 +85,15 @@ def download_from_drive(service, filename: str, dest_path: pathlib.Path) -> bool
             while not done:
                 _, done = downloader.next_chunk()
         return True
-    except:
+    except Exception as e:
         return False
 
 def upload_to_drive(service, local_path: pathlib.Path, filename: str):
     """Upload atau update file ke Google Drive"""
     try:
+        if not service:
+            return False
+            
         file_id = get_file_id(service, filename)
         media = MediaFileUpload(str(local_path), mimetype="application/geo+json", resumable=True)
         if file_id:
@@ -89,7 +103,7 @@ def upload_to_drive(service, local_path: pathlib.Path, filename: str):
             service.files().create(body=metadata, media_body=media).execute()
         return True
     except Exception as e:
-        st.error(f"Gagal upload ke Drive: {str(e)}")
+        st.error(f"❌ Gagal upload ke Drive: {str(e)}")
         return False
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -102,34 +116,11 @@ DATA_DIR.mkdir(exist_ok=True)
 TEMP_DIR = pathlib.Path(tempfile.gettempdir()) / "webgis_cache"
 TEMP_DIR.mkdir(exist_ok=True)
 
-# ✅ Flexible file naming - cek semua kemungkinan nama file
-def find_geojson_file(directory, patterns):
-    """Cari file geojson dengan berbagai kemungkinan nama"""
-    for pattern in patterns:
-        files = list(Path(directory).glob(pattern))
-        if files:
-            return files[0]
-    return None
-
-# Data utama - cek berbagai nama
-DATA_FILE = find_geojson_file(DATA_DIR, [
-    "DATA PEMANFAATAN.geojson"
-])
-
-# Batas Kabupaten - cek berbagai nama
-KABUPATEN_FILE = find_geojson_file(DATA_DIR, [
-    "Batas Administrasi Kabupaten Bandung.geojson"
-])
-
-# Batas Kecamatan - cek berbagai nama
-KECAMATAN_FILE = find_geojson_file(DATA_DIR, [
-    "Batas Administrasi Kecamatan Katapang.geojson"
-])
-
-# RTRW - cek berbagai nama
-RTRW_FILE = find_geojson_file(DATA_DIR, [
-    "RTRW.geojson"
-])
+# ✅ File naming definitions
+DATA_FILENAME = "DATA PEMANFAATAN.geojson"
+KABUPATEN_FILENAME = "Batas Administrasi Kabupaten Bandung.geojson"
+KECAMATAN_FILENAME = "Batas Administrasi Kecamatan Katapang.geojson"
+RTRW_FILENAME = "RTRW.geojson"
 
 # 🖼️ LOGO
 LOGO_PATH = r"logoupimerah.png"
@@ -262,6 +253,11 @@ div[data-baseweb="select"] [role="option"] {
     margin: 10px 0; font-size: 13px; color: #2e7d32;
 }
 
+.drive-status.loading {
+    background: rgba(33, 150, 243, 0.1); border: 1px solid rgba(33, 150, 243, 0.3);
+    border-left: 4px solid #2196F3; color: #1565c0;
+}
+
 @media (max-width: 768px) {
     .hero-title { font-size: 1.8rem; }
     .header-gold-bar { flex-direction: column; gap: 12px; }
@@ -294,6 +290,8 @@ if "admin_logged_in" not in st.session_state:
     st.session_state.admin_logged_in = False
 if "current_page" not in st.session_state:
     st.session_state.current_page = "landing"
+if "data_load_status" not in st.session_state:
+    st.session_state.data_load_status = None
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🖼️ LOGO LOADING
@@ -314,60 +312,68 @@ def load_logo_base64(logo_path):
 logo_base64, logo_exists = load_logo_base64(LOGO_PATH)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 📂 DATA LOADING FUNCTIONS
+# 📂 DATA LOADING FUNCTIONS (WITH GOOGLE DRIVE)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def load_boundary(filepath):
-    """Load boundary data"""
+@st.cache_data(ttl=3600)
+def load_data_from_drive_or_local(filename: str, is_main: bool = False):
+    """
+    Load data dari Google Drive dengan fallback ke file lokal
+    - First check Drive
+    - Download jika ada
+    - Fallback ke local jika Drive tidak available
+    """
+    local_path = DATA_DIR / filename
+    
+    # Coba load dari Drive terlebih dahulu
+    if USE_GOOGLE_DRIVE:
+        try:
+            drive_service = get_drive_service()
+            if drive_service:
+                if download_from_drive(drive_service, filename, local_path):
+                    # File berhasil di-download dari Drive
+                    pass
+        except:
+            pass
+    
+    # Load dari file lokal (baik dari cache Drive atau existing)
     try:
-        if filepath is None or not os.path.exists(str(filepath)):
+        if not local_path.exists():
             return gpd.GeoDataFrame()
         
-        gdf = gpd.read_file(str(filepath))
+        gdf = gpd.read_file(str(local_path))
+        
         if gdf.empty:
             return gpd.GeoDataFrame()
         
+        # Normalisasi CRS
         if gdf.crs is None:
             gdf = gdf.set_crs("EPSG:4326")
         elif gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs("EPSG:4326")
         
-        return gdf
-    except Exception as e:
-        return gpd.GeoDataFrame()
-
-def load_main_data():
-    """LOAD DATA UTAMA dari file lokal"""
-    try:
-        if DATA_FILE is None or not DATA_FILE.exists():
-            return gpd.GeoDataFrame()
-        
-        gdf = gpd.read_file(str(DATA_FILE))
-        
-        if gdf.empty:
-            return gpd.GeoDataFrame()
-        
-        if gdf.crs is None:
-            gdf = gdf.set_crs("EPSG:4326")
-        elif gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        
-        if "OBJECTID" not in gdf.columns:
+        # Add OBJECTID untuk main data
+        if is_main and "OBJECTID" not in gdf.columns:
             gdf.insert(0, "OBJECTID", range(1, len(gdf) + 1))
         
-        gdf["source"] = "main"
+        if is_main:
+            gdf["source"] = "main"
+        
         return gdf
         
     except Exception as e:
-        st.error(f"❌ Error load data: {str(e)}")
         return gpd.GeoDataFrame()
 
 def load_all_data():
-    """LOAD SEMUA DATA"""
-    return load_main_data()
+    """LOAD SEMUA DATA dari Drive + Local"""
+    return load_data_from_drive_or_local(DATA_FILENAME, is_main=True)
+
+def load_boundary(filename: str):
+    """Load boundary data"""
+    return load_data_from_drive_or_local(filename, is_main=False)
 
 def save_data(gdf: gpd.GeoDataFrame, filename: str = None):
-    """Simpan data ke file lokal dan upload ke Drive jika tersedia"""
+    """Simpan data ke file lokal dan upload ke Drive"""
     try:
         if gdf.crs is None:
             gdf = gdf.set_crs("EPSG:4326")
@@ -376,18 +382,21 @@ def save_data(gdf: gpd.GeoDataFrame, filename: str = None):
         
         # Simpan ke file lokal
         if filename is None:
-            filename = str(DATA_FILE)
+            filename = DATA_DIR / DATA_FILENAME
+        else:
+            filename = Path(filename)
         
+        filename.parent.mkdir(exist_ok=True)
         gdf.to_file(str(filename), driver="GeoJSON")
         st.success("✅ Data tersimpan ke file lokal!")
         
-        # Upload ke Drive jika tersedia
+        # Upload ke Drive
         if USE_GOOGLE_DRIVE:
             drive_service = get_drive_service()
             if drive_service:
-                with st.spinner("Uploading ke Google Drive..."):
-                    drive_filename = Path(filename).name
-                    if upload_to_drive(drive_service, Path(filename), drive_filename):
+                with st.spinner("⏳ Uploading ke Google Drive..."):
+                    drive_filename = filename.name
+                    if upload_to_drive(drive_service, filename, drive_filename):
                         st.success("✅ Data juga tersimpan ke Google Drive!")
         
         st.cache_data.clear()
@@ -452,30 +461,39 @@ def display_cols(df):
 # 🎯 LOAD DATA SAAT APP START
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-gdf = load_all_data()
-gdf_kabupaten = load_boundary(KABUPATEN_FILE)
-gdf_kecamatan = load_boundary(KECAMATAN_FILE)
-gdf_rtrw = load_boundary(RTRW_FILE)
+with st.spinner("⏳ Loading data dari Google Drive..."):
+    gdf = load_all_data()
+    gdf_kabupaten = load_boundary(KABUPATEN_FILENAME)
+    gdf_kecamatan = load_boundary(KECAMATAN_FILENAME)
+    gdf_rtrw = load_boundary(RTRW_FILENAME)
 
-# ✅ DEBUG: Show what files were found
+# ✅ DEBUG: Show status di sidebar
 with st.sidebar:
-    st.markdown("### 📁 File yang ter-detect:")
-    st.write(f"📍 DATA UTAMA: {'✅' if DATA_FILE else '❌'} {DATA_FILE.name if DATA_FILE else 'Tidak ditemukan'}")
-    st.write(f"📍 KABUPATEN: {'✅' if KABUPATEN_FILE else '❌'} {KABUPATEN_FILE.name if KABUPATEN_FILE else 'Tidak ditemukan'}")
-    st.write(f"📍 KECAMATAN: {'✅' if KECAMATAN_FILE else '❌'} {KECAMATAN_FILE.name if KECAMATAN_FILE else 'Tidak ditemukan'}")
-    st.write(f"📍 RTRW: {'✅' if RTRW_FILE else '❌'} {RTRW_FILE.name if RTRW_FILE else 'Tidak ditemukan'}")
-    st.write(f"📊 Total data loaded: {len(gdf)}")
+    st.markdown("### 📁 Status Data:")
+    
+    st.write(f"📍 **DATA UTAMA:** {'✅' if not gdf.empty else '❌'}")
+    st.write(f"   Nama: `{DATA_FILENAME}`")
+    if not gdf.empty:
+        st.write(f"   Rows: {len(gdf)}")
+    
+    st.write(f"📍 **KABUPATEN:** {'✅' if not gdf_kabupaten.empty else '❌'}")
+    st.write(f"   Nama: `{KABUPATEN_FILENAME}`")
+    
+    st.write(f"📍 **KECAMATAN:** {'✅' if not gdf_kecamatan.empty else '❌'}")
+    st.write(f"   Nama: `{KECAMATAN_FILENAME}`")
+    
+    st.write(f"📍 **RTRW:** {'✅' if not gdf_rtrw.empty else '❌'}")
+    st.write(f"   Nama: `{RTRW_FILENAME}`")
+    
+    st.markdown("---")
     
     if USE_GOOGLE_DRIVE:
-        st.markdown("---")
         st.markdown("### ☁️ Google Drive")
-        st.write("✅ Google Drive integration aktif")
-        st.write("Data akan auto-sync ke Drive saat di-save")
+        st.markdown('<div class="drive-status">✅ Integration aktif<br/>📂 Folder: 1dTdLnvUyRgFDKCSLLKH83ZOb2fou0Mci</div>', unsafe_allow_html=True)
+        st.write("Data auto-load dari Drive saat startup")
     else:
-        st.markdown("---")
         st.markdown("### ☁️ Google Drive")
-        st.write("❌ Google Drive belum dikonfigurasi")
-        st.write("Setup: Tambah FOLDER_ID & gcp_service_account ke secrets.toml")
+        st.markdown('<div class="drive-status loading">⚠️ Belum dikonfigurasi<br/>Add credentials ke secrets.toml</div>', unsafe_allow_html=True)
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🎨 HEADER & NAVIGATION
@@ -575,13 +593,15 @@ elif st.session_state.current_page == "peta":
     if gdf.empty:
         st.error("❌ TIDAK ADA DATA!")
         st.info(f"""
-        ℹ️ Pastikan file sudah berada di folder `data/`
+        ℹ️ Upload data di Admin Panel atau pastikan file ada di Google Drive
         
-        File yang harus ada:
-        - `data/DATA_PEMANFAATAN.geojson` (UTAMA)
-        - `data/Batas_Kabupaten.geojson` (Optional)
-        - `data/Batas_Kecamatan.geojson` (Optional)
-        - `data/RTRW.geojson` (Optional)
+        File yang diharapkan:
+        - `{DATA_FILENAME}` (WAJIB)
+        - `{KABUPATEN_FILENAME}` (Opsional)
+        - `{KECAMATAN_FILENAME}` (Opsional)
+        - `{RTRW_FILENAME}` (Opsional)
+        
+        📂 Google Drive Folder: https://drive.google.com/drive/folders/1dTdLnvUyRgFDKCSLLKH83ZOb2fou0Mci
         """)
     else:
         tahun_opts = ["Semua"] + sorted(gdf["TAHUN"].dropna().astype(str).unique().tolist()) if "TAHUN" in gdf.columns else ["Semua"]
@@ -692,7 +712,7 @@ elif st.session_state.current_page == "admin":
             st.rerun()
 
         if USE_GOOGLE_DRIVE:
-            st.markdown('<div class="drive-status">☁️ Google Drive Sync: Aktif - Data akan otomatis tersimpan ke Google Drive</div>', unsafe_allow_html=True)
+            st.markdown('<div class="drive-status">☁️ Google Drive Sync: Aktif - Data otomatis tersimpan ke Google Drive</div>', unsafe_allow_html=True)
 
         tab1, tab2, tab3 = st.tabs(["📤 Upload Data", "📥 Export", "ℹ️ Info"])
         
@@ -714,7 +734,7 @@ elif st.session_state.current_page == "admin":
                     with col1:
                         if st.button("💾 Ganti Seluruh Data", use_container_width=True, type="primary"):
                             with st.spinner("Menyimpan data..."):
-                                save_data(shp, str(DATA_FILE))
+                                save_data(shp, str(DATA_DIR / DATA_FILENAME))
                             st.rerun()
                     with col2:
                         if st.button("❌ Batal"):
@@ -753,16 +773,20 @@ elif st.session_state.current_page == "admin":
             with col1:
                 st.metric("📊 Total Data", len(gdf))
             with col2:
-                st.metric("📁 Data File", DATA_FILE.name if DATA_FILE else "N/A")
+                st.metric("📁 Data File", DATA_FILENAME)
             
             st.markdown("---")
             
             if USE_GOOGLE_DRIVE:
-                st.markdown("""
+                st.markdown(f"""
                 ### ☁️ Google Drive Integration
                 ✅ **Status:** Aktif
-                - Data otomatis di-backup ke Google Drive
-                - Saat upload/edit → langsung tersinkronisasi
+                
+                - 📂 **Folder ID:** `{FOLDER_ID}`
+                - 🔗 **Link:** [Open in Drive](https://drive.google.com/drive/folders/{FOLDER_ID})
+                - ⚙️ **Sinkronisasi:** Otomatis saat save
+                - 📤 **Upload File:** Otomatis
+                - 📥 **Download File:** Otomatis saat startup
                 """)
             else:
                 st.markdown("""
@@ -770,9 +794,10 @@ elif st.session_state.current_page == "admin":
                 ❌ **Status:** Belum dikonfigurasi
                 
                 Untuk mengaktifkan:
-                1. Create folder di Google Drive
+                1. Buat folder di Google Drive
                 2. Share dengan Service Account
                 3. Copy FOLDER_ID & credentials ke `secrets.toml`
+                4. Restart aplikasi
                 """)
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -790,23 +815,42 @@ elif st.session_state.current_page == "beranda":
     st.markdown("""
     ### 📋 Tentang Platform
     
-    WebGIS Pemanfaatan Ruang adalah sistem informasi geospasial yang dirancang untuk manajemen data spasial dengan integrasi Google Drive.
+    WebGIS Pemanfaatan Ruang adalah sistem informasi geospasial yang dirancang untuk manajemen data spasial dengan integrasi Google Drive terintegrasi penuh.
     
     ### ✨ Fitur Utama
     
     - 🗺️ **Visualisasi Peta Interaktif** - Multi-layer dengan Folium
     - 🔍 **Filter Data Advanced** - Filter berdasarkan tahun, pemanfaatan, zonasi
     - 📤 **Upload Data** - Support SHP, GeoJSON, KML, KMZ
-    - ☁️ **Google Drive Sync** - Backup & sinkronisasi otomatis
+    - ☁️ **Google Drive Integration** - Auto-load & auto-backup
     - 🔐 **Admin Panel** - Password-protected untuk data management
     - 📊 **Data Export** - Download sebagai GeoJSON atau CSV
-
+    - 🚀 **Deployment Ready** - Tanpa perlu push data ke GitHub
+    
+    ### 📂 Struktur Data (Google Drive)
+    
+    ```
+    Google Drive Folder: 1dTdLnvUyRgFDKCSLLKH83ZOb2fou0Mci
+    ├── DATA PEMANFAATAN.geojson (wajib)
+    ├── Batas Administrasi Kabupaten Bandung.geojson (opsional)
+    ├── Batas Administrasi Kecamatan Katapang.geojson (opsional)
+    └── RTRW.geojson (opsional)
+    ```
+    
     ### 🔧 Teknologi
     
     - **Streamlit** - Web framework
     - **GeoPandas** - Geospatial data processing
     - **Leafmap** - Interactive maps
     - **Google Drive API** - Cloud storage integration
+    
+    ### 🚀 Deployment
+    
+    Aplikasi dapat di-deploy ke Streamlit Cloud tanpa perlu push data ke GitHub:
+    1. Data tersimpan di Google Drive
+    2. Aplikasi auto-load data saat startup
+    3. User dapat upload data via Admin Panel
+    4. Auto-backup ke Google Drive
     """)
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -817,6 +861,6 @@ st.markdown("---")
 st.markdown("""
 <div class="footer">
     <p>© 2025 WebGIS Pemanfaatan Ruang — Platform Geospasial Terdepan</p>
-    <p style="font-size: 0.8rem;">Dengan Google Drive Integration ☁️</p>
+    <p style="font-size: 0.8rem;">Dengan Google Drive Integration ☁️ | Data di-load langsung dari Drive</p>
 </div>
 """, unsafe_allow_html=True)
