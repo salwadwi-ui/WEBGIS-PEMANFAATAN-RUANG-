@@ -40,12 +40,16 @@ KABUPATEN_FILE  = TEMP_DIR / "Batas Administrasi Kabupaten Bandung.geojson"
 KECAMATAN_FILE  = TEMP_DIR / "Batas Administrasi Kecamatan Katapang.geojson"
 RTRW_FILE       = TEMP_DIR / "RTRW.geojson"
 
-# 🖼️ LOGO PATH & DATA PATH - UBAH SESUAI PATH KAMU
-LOGO_PATH = r"logoupimerah.png"
-LOCAL_DATA_PATH = r"DATA PEMANFAATAN.geojson"
-LOCAL_DATA_PATH = r"Batas Administrasi Kabupaten Bandung.geojson"
-LOCAL_DATA_PATH = r"Batas Administrasi Kecamatan Katapang.geojson"
-LOCAL_DATA_PATH = r"RTRW.geojson"
+from pathlib import Path
+
+BASE_DIR = Path(__file__).parent
+
+LOGO_PATH = BASE_DIR / "logoupimerah.png"
+
+DATA_PEMANFAATAN = BASE_DIR / "DATA PEMANFAATAN.geojson"
+BATAS_KAB = BASE_DIR / "Batas Administrasi Kabupaten Bandung.geojson"
+BATAS_KEC = BASE_DIR / "Batas Administrasi Kecamatan Katapang.geojson"
+RTRW = BASE_DIR / "RTRW.geojson"
 
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin123")
 
