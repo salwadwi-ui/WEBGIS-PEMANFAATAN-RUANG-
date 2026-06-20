@@ -41,8 +41,8 @@ KECAMATAN_FILE  = TEMP_DIR / "Batas Administrasi Kecamatan Katapang.geojson"
 RTRW_FILE       = TEMP_DIR / "RTRW.geojson"
 
 # 🖼️ LOGO PATH & DATA PATH - UBAH SESUAI PATH KAMU
-LOGO_PATH = r"D:\TUGAS AKHIR\CODING\logoupimerah.png"
-LOCAL_DATA_PATH = r"D:\TUGAS AKHIR\CODING\DATA PEMANFAATAN.geojson"
+LOGO_PATH = r"logoupimerah.png"
+LOCAL_DATA_PATH = r"DATA PEMANFAATAN.geojson"
 
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin123")
 
