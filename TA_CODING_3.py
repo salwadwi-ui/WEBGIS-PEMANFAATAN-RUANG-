@@ -2,6 +2,7 @@
 🗺️ WebGIS Pemanfaatan Ruang - DATA UTAMA LANGSUNG MUNCUL
 Data utama otomatis di-load dari file
 Admin panel hanya untuk data TAMBAHAN
+✅ FIXED: Nama file sekarang flexible
 """
 
 import os
@@ -26,15 +27,48 @@ from PIL import Image
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # 📁 DATA PATHS
-# Data utama: letakkan file geojson di folder project
-DATA_DIR = Path("data")  # Folder untuk semua data
+DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
-# File data utama (HARUS ADA di folder data/)
-DATA_FILE = DATA_DIR / "DATA_PEMANFAATAN.geojson"
-KABUPATEN_FILE = DATA_DIR / "Batas_Kabupaten.geojson"
-KECAMATAN_FILE = DATA_DIR / "Batas_Kecamatan.geojson"
-RTRW_FILE = DATA_DIR / "RTRW.geojson"
+# ✅ FIXED: Flexible file naming - cek semua kemungkinan nama file
+def find_geojson_file(directory, patterns):
+    """Cari file geojson dengan berbagai kemungkinan nama"""
+    for pattern in patterns:
+        files = list(Path(directory).glob(pattern))
+        if files:
+            return files[0]
+    return None
+
+# Data utama - cek berbagai nama
+DATA_FILE = find_geojson_file(DATA_DIR, [
+    "DATA_PEMANFAATAN.geojson",
+    "data_pemanfaatan.geojson",
+    "DATA*.geojson"
+])
+
+# Batas Kabupaten - cek berbagai nama
+KABUPATEN_FILE = find_geojson_file(DATA_DIR, [
+    "Batas_Kabupaten.geojson",
+    "batas_kabupaten.geojson",
+    "*Kabupaten*.geojson",
+    "*kabupaten*.geojson"
+])
+
+# Batas Kecamatan - cek berbagai nama
+KECAMATAN_FILE = find_geojson_file(DATA_DIR, [
+    "Batas_Kecamatan.geojson",
+    "batas_kecamatan.geojson",
+    "*Kecamatan*.geojson",
+    "*kecamatan*.geojson"
+])
+
+# RTRW - cek berbagai nama
+RTRW_FILE = find_geojson_file(DATA_DIR, [
+    "RTRW.geojson",
+    "rtrw.geojson",
+    "*RTRW*.geojson",
+    "*rtrw*.geojson"
+])
 
 # File data TAMBAHAN dari admin upload (terpisah di temp)
 TEMP_DIR = pathlib.Path(tempfile.gettempdir()) / "webgis_additional"
@@ -321,13 +355,13 @@ logo_base64, logo_exists = load_logo_base64(LOGO_PATH)
 # 📂 DATA LOADING FUNCTIONS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def load_boundary(filepath: str):
+def load_boundary(filepath):
     """Load boundary data"""
     try:
-        if not os.path.exists(filepath):
+        if filepath is None or not os.path.exists(str(filepath)):
             return gpd.GeoDataFrame()
         
-        gdf = gpd.read_file(filepath)
+        gdf = gpd.read_file(str(filepath))
         if gdf.empty:
             return gpd.GeoDataFrame()
         
@@ -338,6 +372,7 @@ def load_boundary(filepath: str):
         
         return gdf
     except Exception as e:
+        st.warning(f"⚠️ Tidak bisa load file: {filepath}")
         return gpd.GeoDataFrame()
 
 def load_main_data():
@@ -346,14 +381,12 @@ def load_main_data():
     Ini adalah database utama yang selalu ada
     """
     try:
-        if not DATA_FILE.exists():
-            st.warning(f"⚠️ File data utama tidak ditemukan: {DATA_FILE}")
+        if DATA_FILE is None or not DATA_FILE.exists():
             return gpd.GeoDataFrame()
         
         gdf = gpd.read_file(str(DATA_FILE))
         
         if gdf.empty:
-            st.warning("⚠️ File data utama kosong")
             return gpd.GeoDataFrame()
         
         # Normalize CRS
@@ -376,7 +409,6 @@ def load_main_data():
 def load_additional_data():
     """
     LOAD DATA TAMBAHAN - Dari upload admin
-    Ini adalah data yang di-upload via admin panel
     """
     try:
         if not ADDITIONAL_DATA_FILE.exists():
@@ -387,7 +419,6 @@ def load_additional_data():
         if gdf.empty:
             return gpd.GeoDataFrame()
         
-        # Normalize CRS
         if gdf.crs is None:
             gdf = gdf.set_crs("EPSG:4326")
         elif gdf.crs.to_epsg() != 4326:
@@ -396,20 +427,17 @@ def load_additional_data():
         if "OBJECTID" not in gdf.columns:
             gdf.insert(0, "OBJECTID", range(1, len(gdf) + 1))
         
-        gdf["source"] = "additional"  # Tag sebagai additional
+        gdf["source"] = "additional"
         return gdf
         
     except:
         return gpd.GeoDataFrame()
 
 def load_all_data():
-    """
-    LOAD SEMUA DATA = Main + Additional
-    """
+    """LOAD SEMUA DATA = Main + Additional"""
     gdf_main = load_main_data()
     gdf_additional = load_additional_data()
     
-    # Merge
     if not gdf_main.empty and not gdf_additional.empty:
         gdf = gpd.GeoDataFrame(pd.concat([gdf_main, gdf_additional], ignore_index=True))
     elif not gdf_main.empty:
@@ -497,9 +525,18 @@ def display_cols(df):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 gdf = load_all_data()
-gdf_kabupaten = load_boundary(str(KABUPATEN_FILE))
-gdf_kecamatan = load_boundary(str(KECAMATAN_FILE))
-gdf_rtrw = load_boundary(str(RTRW_FILE))
+gdf_kabupaten = load_boundary(KABUPATEN_FILE)
+gdf_kecamatan = load_boundary(KECAMATAN_FILE)
+gdf_rtrw = load_boundary(RTRW_FILE)
+
+# ✅ DEBUG: Show what files were found
+with st.sidebar:
+    st.markdown("### 📁 File yang ter-detect:")
+    st.write(f"📍 DATA UTAMA: {'✅' if DATA_FILE else '❌'} {DATA_FILE.name if DATA_FILE else 'Tidak ditemukan'}")
+    st.write(f"📍 KABUPATEN: {'✅' if KABUPATEN_FILE else '❌'} {KABUPATEN_FILE.name if KABUPATEN_FILE else 'Tidak ditemukan'}")
+    st.write(f"📍 KECAMATAN: {'✅' if KECAMATAN_FILE else '❌'} {KECAMATAN_FILE.name if KECAMATAN_FILE else 'Tidak ditemukan'}")
+    st.write(f"📍 RTRW: {'✅' if RTRW_FILE else '❌'} {RTRW_FILE.name if RTRW_FILE else 'Tidak ditemukan'}")
+    st.write(f"📊 Total data loaded: {len(gdf)}")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🎨 HEADER & NAVIGATION
@@ -529,9 +566,6 @@ with col3:
         st.rerun()
 
 st.markdown("---")
-
-if not logo_exists:
-    st.info("ℹ️ Logo tidak ditemukan. Letakkan `logoupimerah.png` di folder project.")
 
 # ════════════════════════════════════════════════════════════════════════════
 # 📍 PAGE: LANDING
@@ -600,17 +634,28 @@ elif st.session_state.current_page == "peta":
     """, unsafe_allow_html=True)
 
     if gdf.empty:
-        st.error("❌ TIDAK ADA DATA! Letakkan file geojson di folder `data/` dengan nama `DATA_PEMANFAATAN.geojson`")
-        st.info("""
-        📁 Struktur folder harus:
+        st.error("❌ TIDAK ADA DATA!")
+        st.info(f"""
+        ℹ️ Pastikan file sudah berada di folder `data/`
+        
+        File yang harus ada:
+        - `data/DATA_PEMANFAATAN.geojson` (UTAMA)
+        - `data/Batas_Kabupaten.geojson` (Optional)
+        - `data/Batas_Kecamatan.geojson` (Optional)
+        - `data/RTRW.geojson` (Optional)
+        
+        Struktur folder:
         ```
         project/
         ├── app.py
         └── data/
-            └── DATA_PEMANFAATAN.geojson  ← LETAKKAN DI SINI
+            ├── DATA_PEMANFAATAN.geojson
+            ├── Batas_Kabupaten.geojson
+            ├── Batas_Kecamatan.geojson
+            └── RTRW.geojson
         ```
         
-        Setelah tambah file, reload app: `F5` atau `Ctrl+R`
+        Reload app setelah menambah file: `F5` atau `Ctrl+R`
         """)
     else:
         # PREPARE FILTER OPTIONS
@@ -739,7 +784,7 @@ elif st.session_state.current_page == "admin":
             st.subheader("📤 Upload Data Tambahan")
             
             st.info("""
-            ✅ **Data utama sudah ada** (dimuat otomatis dari file `DATA_PEMANFAATAN.geojson`)
+            ✅ **Data utama sudah ada** (dimuat otomatis dari file)
             
             Di sini Anda bisa upload data TAMBAHAN untuk menambah data yang sudah ada.
             """)
