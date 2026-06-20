@@ -1,8 +1,7 @@
 """
-🗺️ WebGIS Pemanfaatan Ruang - DATA UTAMA LANGSUNG MUNCUL
-Data utama otomatis di-load dari file
-Admin panel hanya untuk data TAMBAHAN
-✅ FIXED: Nama file sekarang flexible
+🗺️ WebGIS Pemanfaatan Ruang - GOOGLE DRIVE INTEGRATION
+Data utama + Google Drive Sync + Admin Panel
+✅ Flexible file naming + Google Drive upload/download
 """
 
 import os
@@ -20,17 +19,90 @@ import streamlit as st
 import streamlit.components.v1 as components
 import leafmap.foliumap as leafmap
 
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from google.oauth2 import service_account
 from PIL import Image
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# ⚙️ CONFIGURATION
+# ⚙️ GOOGLE DRIVE SETUP
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+# Try to get FOLDER_ID dari secrets, default None jika tidak ada
+try:
+    FOLDER_ID = st.secrets.get("FOLDER_ID", None)
+    USE_GOOGLE_DRIVE = FOLDER_ID is not None
+except:
+    USE_GOOGLE_DRIVE = False
+    FOLDER_ID = None
+
+@st.cache_resource
+def get_drive_service():
+    """Get Google Drive service"""
+    try:
+        creds = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=SCOPES
+        )
+        return build("drive", "v3", credentials=creds)
+    except:
+        return None
+
+def get_file_id(service, filename: str):
+    """Cari file di folder Drive berdasarkan nama"""
+    try:
+        results = service.files().list(
+            q=f"name='{filename}' and '{FOLDER_ID}' in parents and trashed=false",
+            fields="files(id, name)"
+        ).execute()
+        files = results.get("files", [])
+        return files[0]["id"] if files else None
+    except:
+        return None
+
+def download_from_drive(service, filename: str, dest_path: pathlib.Path) -> bool:
+    """Download file dari Drive ke lokal"""
+    try:
+        file_id = get_file_id(service, filename)
+        if not file_id:
+            return False
+        request = service.files().get_media(fileId=file_id)
+        with open(dest_path, "wb") as f:
+            downloader = MediaIoBaseDownload(f, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+        return True
+    except:
+        return False
+
+def upload_to_drive(service, local_path: pathlib.Path, filename: str):
+    """Upload atau update file ke Google Drive"""
+    try:
+        file_id = get_file_id(service, filename)
+        media = MediaFileUpload(str(local_path), mimetype="application/geo+json", resumable=True)
+        if file_id:
+            service.files().update(fileId=file_id, media_body=media).execute()
+        else:
+            metadata = {"name": filename, "parents": [FOLDER_ID]}
+            service.files().create(body=metadata, media_body=media).execute()
+        return True
+    except Exception as e:
+        st.error(f"Gagal upload ke Drive: {str(e)}")
+        return False
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 📁 DATA PATHS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 
-# ✅ FIXED: Flexible file naming - cek semua kemungkinan nama file
+TEMP_DIR = pathlib.Path(tempfile.gettempdir()) / "webgis_cache"
+TEMP_DIR.mkdir(exist_ok=True)
+
+# ✅ Flexible file naming - cek semua kemungkinan nama file
 def find_geojson_file(directory, patterns):
     """Cari file geojson dengan berbagai kemungkinan nama"""
     for pattern in patterns:
@@ -43,6 +115,7 @@ def find_geojson_file(directory, patterns):
 DATA_FILE = find_geojson_file(DATA_DIR, [
     "DATA_PEMANFAATAN.geojson",
     "data_pemanfaatan.geojson",
+    "data tugas akhir.geojson",
     "DATA*.geojson"
 ])
 
@@ -69,11 +142,6 @@ RTRW_FILE = find_geojson_file(DATA_DIR, [
     "*RTRW*.geojson",
     "*rtrw*.geojson"
 ])
-
-# File data TAMBAHAN dari admin upload (terpisah di temp)
-TEMP_DIR = pathlib.Path(tempfile.gettempdir()) / "webgis_additional"
-TEMP_DIR.mkdir(exist_ok=True)
-ADDITIONAL_DATA_FILE = TEMP_DIR / "data_additional.geojson"
 
 # 🖼️ LOGO
 LOGO_PATH = r"logoupimerah.png"
@@ -127,177 +195,83 @@ html, body {
     border-image: linear-gradient(90deg, #FFD700, #00BCD4) 1;
 }
 
-.header-left {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-}
-
-.header-logo-img {
-    max-width: 65px;
-    height: auto;
-    max-height: 65px;
-    object-fit: contain;
-}
-
+.header-left { display: flex; align-items: center; gap: 16px; }
+.header-logo-img { max-width: 65px; height: auto; max-height: 65px; object-fit: contain; }
 .header-logo-placeholder {
-    width: 58px;
-    height: 58px;
+    width: 58px; height: 58px;
     background: linear-gradient(135deg, #FFD700, #00BCD4);
-    border-radius: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 30px;
-    font-weight: bold;
-    color: white;
+    border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    font-size: 30px; font-weight: bold; color: white;
 }
 
 .stButton > button {
     background: linear-gradient(135deg, #1a3a52, #2a5a72) !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 10px !important;
-    padding: 12px 24px !important;
-    font-weight: 700 !important;
-    font-size: 11px !important;
-    text-transform: uppercase !important;
-    letter-spacing: 1px !important;
+    color: white !important; border: none !important; border-radius: 10px !important;
+    padding: 12px 24px !important; font-weight: 700 !important; font-size: 11px !important;
+    text-transform: uppercase !important; letter-spacing: 1px !important;
     transition: all 0.3s ease !important;
 }
-
 .stButton > button:hover {
     background: linear-gradient(135deg, #FFD700, #FFC700) !important;
-    color: #1a3a52 !important;
-    transform: translateY(-3px) !important;
+    color: #1a3a52 !important; transform: translateY(-3px) !important;
     box-shadow: 0 8px 20px rgba(255, 215, 0, 0.3) !important;
 }
 
 .hero-section {
     background: linear-gradient(135deg, #1a3a52 0%, #2a5a72 100%);
-    color: white;
-    padding: 60px 40px;
-    text-align: center;
-    border-radius: 12px;
-    margin-bottom: 30px;
+    color: white; padding: 60px 40px; text-align: center;
+    border-radius: 12px; margin-bottom: 30px;
 }
-
-.hero-title {
-    font-family: 'Playfair Display', serif;
-    font-size: 2.5rem;
-    font-weight: 800;
-    margin: 0;
-    text-transform: uppercase;
-}
-
-.hero-subtitle {
-    font-size: 1rem;
-    opacity: 0.9;
-    margin-top: 12px;
-    color: #00BCD4;
-}
+.hero-title { font-family: 'Playfair Display', serif; font-size: 2.5rem; font-weight: 800; margin: 0; text-transform: uppercase; }
+.hero-subtitle { font-size: 1rem; opacity: 0.9; margin-top: 12px; color: #00BCD4; }
 
 .feature-box {
-    background: white;
-    border-radius: 12px;
-    padding: 24px;
-    text-align: center;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-    border: 1.5px solid #e8ecf1;
+    background: white; border-radius: 12px; padding: 24px; text-align: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.06); border: 1.5px solid #e8ecf1;
     transition: all 0.3s ease;
 }
-
-.feature-box:hover {
-    transform: translateY(-8px);
-    box-shadow: 0 12px 24px rgba(26, 58, 82, 0.12);
-    border-color: #FFD700;
-}
-
-.feature-icon {
-    font-size: 2.5rem;
-    margin-bottom: 12px;
-}
-
-.feature-title {
-    font-size: 1.1rem;
-    font-weight: 700;
-    color: #1a3a52;
-    margin-bottom: 8px;
-    text-transform: uppercase;
-}
-
-.feature-desc {
-    font-size: 0.85rem;
-    color: #666;
-    line-height: 1.5;
-}
+.feature-box:hover { transform: translateY(-8px); box-shadow: 0 12px 24px rgba(26, 58, 82, 0.12); border-color: #FFD700; }
+.feature-icon { font-size: 2.5rem; margin-bottom: 12px; }
+.feature-title { font-size: 1.1rem; font-weight: 700; color: #1a3a52; margin-bottom: 8px; text-transform: uppercase; }
+.feature-desc { font-size: 0.85rem; color: #666; line-height: 1.5; }
 
 .stat-box {
     background: linear-gradient(135deg, #ffffff 0%, #f8fafb 100%);
-    color: #1a3a52;
-    padding: 20px;
-    border-radius: 12px;
-    text-align: center;
-    border: 2px solid #e8ecf1;
+    color: #1a3a52; padding: 20px; border-radius: 12px; text-align: center; border: 2px solid #e8ecf1;
 }
-
 .stat-number {
-    font-family: 'Playfair Display', serif;
-    font-size: 2.2rem;
-    font-weight: 800;
+    font-family: 'Playfair Display', serif; font-size: 2.2rem; font-weight: 800;
     background: linear-gradient(135deg, #FFD700, #00BCD4);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin: 0;
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin: 0;
 }
-
-.stat-label {
-    font-size: 0.75rem;
-    color: #666;
-    text-transform: uppercase;
-    font-weight: 600;
-    margin-top: 8px;
-}
+.stat-label { font-size: 0.75rem; color: #666; text-transform: uppercase; font-weight: 600; margin-top: 8px; }
 
 .filter-label {
-    font-size: 10px !important;
-    font-weight: 700 !important;
-    color: #1a3a52 !important;
-    text-transform: uppercase !important;
-    letter-spacing: 1px !important;
-    margin-bottom: 8px !important;
+    font-size: 10px !important; font-weight: 700 !important; color: #1a3a52 !important;
+    text-transform: uppercase !important; letter-spacing: 1px !important; margin-bottom: 8px !important;
 }
 
 .stSelectbox > div > div {
-    background: white !important;
-    border: 2px solid #e8ecf1 !important;
-    border-radius: 10px !important;
+    background: white !important; border: 2px solid #e8ecf1 !important; border-radius: 10px !important;
 }
-
-.stSelectbox * {
-    color: #1a3a52 !important;
-    font-weight: 500 !important;
-}
+.stSelectbox * { color: #1a3a52 !important; font-weight: 500 !important; }
 
 div[data-baseweb="select"] > div {
-    background: white !important;
-    border: 2px solid #e8ecf1 !important;
+    background: white !important; border: 2px solid #e8ecf1 !important;
 }
-
 div[data-baseweb="select"] [role="option"] {
-    background: white !important;
-    color: #1a3a52 !important;
+    background: white !important; color: #1a3a52 !important;
 }
 
 .footer {
     background: linear-gradient(135deg, #1a3a52 0%, #2a5a72 100%);
-    color: white;
-    padding: 40px;
-    border-radius: 12px;
-    margin-top: 50px;
-    text-align: center;
-    font-size: 0.85rem;
+    color: white; padding: 40px; border-radius: 12px; margin-top: 50px; text-align: center; font-size: 0.85rem;
+}
+
+.drive-status {
+    background: rgba(76, 175, 80, 0.1); border: 1px solid rgba(76, 175, 80, 0.3);
+    border-left: 4px solid #4CAF50; border-radius: 8px; padding: 12px;
+    margin: 10px 0; font-size: 13px; color: #2e7d32;
 }
 
 @media (max-width: 768px) {
@@ -372,14 +346,10 @@ def load_boundary(filepath):
         
         return gdf
     except Exception as e:
-        st.warning(f"⚠️ Tidak bisa load file: {filepath}")
         return gpd.GeoDataFrame()
 
 def load_main_data():
-    """
-    LOAD DATA UTAMA - Langsung dari file, tidak perlu admin upload
-    Ini adalah database utama yang selalu ada
-    """
+    """LOAD DATA UTAMA dari file lokal"""
     try:
         if DATA_FILE is None or not DATA_FILE.exists():
             return gpd.GeoDataFrame()
@@ -389,82 +359,56 @@ def load_main_data():
         if gdf.empty:
             return gpd.GeoDataFrame()
         
-        # Normalize CRS
         if gdf.crs is None:
             gdf = gdf.set_crs("EPSG:4326")
         elif gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs("EPSG:4326")
         
-        # Add OBJECTID
         if "OBJECTID" not in gdf.columns:
             gdf.insert(0, "OBJECTID", range(1, len(gdf) + 1))
         
-        gdf["source"] = "main"  # Tag sebagai main data
+        gdf["source"] = "main"
         return gdf
         
     except Exception as e:
-        st.error(f"❌ Error load data utama: {str(e)}")
-        return gpd.GeoDataFrame()
-
-def load_additional_data():
-    """
-    LOAD DATA TAMBAHAN - Dari upload admin
-    """
-    try:
-        if not ADDITIONAL_DATA_FILE.exists():
-            return gpd.GeoDataFrame()
-        
-        gdf = gpd.read_file(str(ADDITIONAL_DATA_FILE))
-        
-        if gdf.empty:
-            return gpd.GeoDataFrame()
-        
-        if gdf.crs is None:
-            gdf = gdf.set_crs("EPSG:4326")
-        elif gdf.crs.to_epsg() != 4326:
-            gdf = gdf.to_crs("EPSG:4326")
-        
-        if "OBJECTID" not in gdf.columns:
-            gdf.insert(0, "OBJECTID", range(1, len(gdf) + 1))
-        
-        gdf["source"] = "additional"
-        return gdf
-        
-    except:
+        st.error(f"❌ Error load data: {str(e)}")
         return gpd.GeoDataFrame()
 
 def load_all_data():
-    """LOAD SEMUA DATA = Main + Additional"""
-    gdf_main = load_main_data()
-    gdf_additional = load_additional_data()
-    
-    if not gdf_main.empty and not gdf_additional.empty:
-        gdf = gpd.GeoDataFrame(pd.concat([gdf_main, gdf_additional], ignore_index=True))
-    elif not gdf_main.empty:
-        gdf = gdf_main
-    elif not gdf_additional.empty:
-        gdf = gdf_additional
-    else:
-        gdf = gpd.GeoDataFrame()
-    
-    return gdf
+    """LOAD SEMUA DATA"""
+    return load_main_data()
 
-def save_additional_data(gdf: gpd.GeoDataFrame):
-    """Save data tambahan ke file"""
+def save_data(gdf: gpd.GeoDataFrame, filename: str = None):
+    """Simpan data ke file lokal dan upload ke Drive jika tersedia"""
     try:
         if gdf.crs is None:
             gdf = gdf.set_crs("EPSG:4326")
         elif gdf.crs.to_epsg() != 4326:
             gdf = gdf.to_crs("EPSG:4326")
         
-        gdf.to_file(str(ADDITIONAL_DATA_FILE), driver="GeoJSON")
-        st.success("✅ Data tambahan disimpan!")
+        # Simpan ke file lokal
+        if filename is None:
+            filename = str(DATA_FILE)
+        
+        gdf.to_file(str(filename), driver="GeoJSON")
+        st.success("✅ Data tersimpan ke file lokal!")
+        
+        # Upload ke Drive jika tersedia
+        if USE_GOOGLE_DRIVE:
+            drive_service = get_drive_service()
+            if drive_service:
+                with st.spinner("Uploading ke Google Drive..."):
+                    drive_filename = Path(filename).name
+                    if upload_to_drive(drive_service, Path(filename), drive_filename):
+                        st.success("✅ Data juga tersimpan ke Google Drive!")
+        
+        st.cache_data.clear()
         
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
 
 def read_shp_from_zip(uploaded_file):
-    """Support SHP, KML, KMZ, GDB"""
+    """Support SHP, KML, KMZ"""
     with tempfile.TemporaryDirectory() as tmpdir:
         temp_path = os.path.join(tmpdir, uploaded_file.name)
         with open(temp_path, "wb") as f:
@@ -478,11 +422,7 @@ def read_shp_from_zip(uploaded_file):
             if shp_files:
                 gdf = gpd.read_file(str(shp_files[0]))
             else:
-                gdb_files = list(Path(tmpdir).rglob("*.gdb"))
-                if gdb_files:
-                    gdf = gpd.read_file(str(gdb_files[0]))
-                else:
-                    raise ValueError("Tidak ada .shp atau .gdb di ZIP")
+                raise ValueError("Tidak ada .shp di ZIP")
         
         elif uploaded_file.name.endswith('.kml'):
             gdf = gpd.read_file(temp_path, driver='KML')
@@ -537,6 +477,17 @@ with st.sidebar:
     st.write(f"📍 KECAMATAN: {'✅' if KECAMATAN_FILE else '❌'} {KECAMATAN_FILE.name if KECAMATAN_FILE else 'Tidak ditemukan'}")
     st.write(f"📍 RTRW: {'✅' if RTRW_FILE else '❌'} {RTRW_FILE.name if RTRW_FILE else 'Tidak ditemukan'}")
     st.write(f"📊 Total data loaded: {len(gdf)}")
+    
+    if USE_GOOGLE_DRIVE:
+        st.markdown("---")
+        st.markdown("### ☁️ Google Drive")
+        st.write("✅ Google Drive integration aktif")
+        st.write("Data akan auto-sync ke Drive saat di-save")
+    else:
+        st.markdown("---")
+        st.markdown("### ☁️ Google Drive")
+        st.write("❌ Google Drive belum dikonfigurasi")
+        st.write("Setup: Tambah FOLDER_ID & gcp_service_account ke secrets.toml")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # 🎨 HEADER & NAVIGATION
@@ -591,9 +542,9 @@ if st.session_state.current_page == "landing":
     with col2:
         st.markdown("""
         <div class="feature-box">
-            <div class="feature-icon">📤</div>
-            <div class="feature-title">Upload Data Tambahan</div>
-            <div class="feature-desc">Tambahkan data baru via admin panel</div>
+            <div class="feature-icon">☁️</div>
+            <div class="feature-title">Google Drive Sync</div>
+            <div class="feature-desc">Data otomatis tersimpan & tersinkronisasi ke Google Drive</div>
         </div>
         """, unsafe_allow_html=True)
     with col3:
@@ -601,7 +552,7 @@ if st.session_state.current_page == "landing":
         <div class="feature-box">
             <div class="feature-icon">🔐</div>
             <div class="feature-title">Admin Dashboard</div>
-            <div class="feature-desc">Kelola data tambahan dengan aman</div>
+            <div class="feature-desc">Kelola dan upload data dengan aman</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -643,27 +594,12 @@ elif st.session_state.current_page == "peta":
         - `data/Batas_Kabupaten.geojson` (Optional)
         - `data/Batas_Kecamatan.geojson` (Optional)
         - `data/RTRW.geojson` (Optional)
-        
-        Struktur folder:
-        ```
-        project/
-        ├── app.py
-        └── data/
-            ├── DATA_PEMANFAATAN.geojson
-            ├── Batas_Kabupaten.geojson
-            ├── Batas_Kecamatan.geojson
-            └── RTRW.geojson
-        ```
-        
-        Reload app setelah menambah file: `F5` atau `Ctrl+R`
         """)
     else:
-        # PREPARE FILTER OPTIONS
         tahun_opts = ["Semua"] + sorted(gdf["TAHUN"].dropna().astype(str).unique().tolist()) if "TAHUN" in gdf.columns else ["Semua"]
         pmnft_opts = ["Semua"] + sorted(gdf["PEMANFAATAN RUANG"].dropna().astype(str).unique().tolist()) if "PEMANFAATAN RUANG" in gdf.columns else ["Semua"]
         zona_opts = ["Semua"] + sorted(gdf["PERATURAN ZONASI"].dropna().astype(str).unique().tolist()) if "PERATURAN ZONASI" in gdf.columns else ["Semua"]
 
-        # RENDER FILTER
         st.markdown("**🔍 Filter Data:**")
         col1, col2, col3, col4 = st.columns(4)
         
@@ -683,7 +619,6 @@ elif st.session_state.current_page == "peta":
             st.write('<p class="filter-label">🔍 CARI</p>', unsafe_allow_html=True)
             f_kw = st.text_input("Cari Keyword", label_visibility="collapsed", placeholder="Keyword...", key="search_filter")
 
-        # APPLY FILTERS
         fgdf = gdf.copy()
         is_filtered = False
         
@@ -707,9 +642,8 @@ elif st.session_state.current_page == "peta":
         st.markdown(f"**📊 Menampilkan {len(fgdf)} dari {len(gdf)} data**")
         
         if is_filtered:
-            st.info("🔍 Filter aktif - Data hasil filter di-highlight")
+            st.info("🔍 Filter aktif")
 
-        # RENDER MAP
         with st.spinner("⏳ Memuat peta…"):
             center, zoom = center_map(fgdf if not fgdf.empty else gdf)
             m = leafmap.Map(center=center, zoom=zoom, height=500)
@@ -731,21 +665,12 @@ elif st.session_state.current_page == "peta":
                     info_mode="on_hover")
             
             if not fgdf.empty:
-                if is_filtered:
-                    m.add_gdf(fgdf, layer_name="✨ Hasil Filter",
-                        style={"color":"#FFD700","fillColor":"#FFD700","fillOpacity":0.55,"weight":2.5},
-                        info_mode="on_click")
-                else:
-                    m.add_gdf(fgdf, layer_name="📍 Pemanfaatan Ruang",
-                        style={"color":"#1a3a52","fillColor":"#FFD700","fillOpacity":0.35,"weight":1.5},
-                        info_mode="on_click")
+                m.add_gdf(fgdf, layer_name="📍 Pemanfaatan Ruang",
+                    style={"color":"#1a3a52","fillColor":"#FFD700","fillOpacity":0.35,"weight":1.5},
+                    info_mode="on_click")
 
-            try:
-                m.to_streamlit(height=500)
-            except Exception as e:
-                st.error(f"⚠️ Error render map: {str(e)}")
+            m.to_streamlit(height=500)
 
-        # DATA TABLE
         if not fgdf.empty:
             st.subheader("📋 Data Detail")
             st.dataframe(fgdf[display_cols(fgdf)], use_container_width=True, height=300)
@@ -758,7 +683,7 @@ elif st.session_state.current_page == "admin":
     st.markdown("""
     <div class="hero-section">
         <h1 class="hero-title">🔐 Admin Panel</h1>
-        <p class="hero-subtitle">Kelola Data Tambahan</p>
+        <p class="hero-subtitle">Kelola & Upload Data Pemanfaatan Ruang</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -778,18 +703,16 @@ elif st.session_state.current_page == "admin":
             st.session_state.admin_logged_in = False
             st.rerun()
 
-        tab1, tab2, tab3, tab4 = st.tabs(["📤 Upload Tambahan", "🗑️ Hapus Tambahan", "📥 Export", "ℹ️ Info"])
+        if USE_GOOGLE_DRIVE:
+            st.markdown('<div class="drive-status">☁️ Google Drive Sync: Aktif - Data akan otomatis tersimpan ke Google Drive</div>', unsafe_allow_html=True)
+
+        tab1, tab2, tab3 = st.tabs(["📤 Upload Data", "📥 Export", "ℹ️ Info"])
         
         with tab1:
-            st.subheader("📤 Upload Data Tambahan")
+            st.subheader("📤 Upload Data SHP/GeoJSON")
+            st.markdown("Upload file **ZIP** (berisi .shp) atau **GeoJSON** untuk mengganti/update data utama.")
             
-            st.info("""
-            ✅ **Data utama sudah ada** (dimuat otomatis dari file)
-            
-            Di sini Anda bisa upload data TAMBAHAN untuk menambah data yang sudah ada.
-            """)
-            
-            uploaded_file = st.file_uploader("Upload File Geospasial", type=["zip", "kml", "kmz", "geojson"])
+            uploaded_file = st.file_uploader("Upload File", type=["zip", "geojson", "kml", "kmz"])
             
             if uploaded_file:
                 try:
@@ -797,12 +720,13 @@ elif st.session_state.current_page == "admin":
                     shp = read_shp_from_zip(uploaded_file)
                     
                     st.success(f"✅ File valid! ({len(shp)} features)")
-                    st.dataframe(shp[display_cols(shp)].head(3), use_container_width=True)
+                    st.dataframe(shp[display_cols(shp)].head(5), use_container_width=True)
                     
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("💾 Simpan Data Tambahan", use_container_width=True, type="primary"):
-                            save_additional_data(shp)
+                        if st.button("💾 Ganti Seluruh Data", use_container_width=True, type="primary"):
+                            with st.spinner("Menyimpan data..."):
+                                save_data(shp, str(DATA_FILE))
                             st.rerun()
                     with col2:
                         if st.button("❌ Batal"):
@@ -812,51 +736,56 @@ elif st.session_state.current_page == "admin":
                     st.error(f"❌ Error: {str(e)}")
         
         with tab2:
-            st.subheader("🗑️ Hapus Data Tambahan")
-            
-            gdf_additional = load_additional_data()
-            
-            if gdf_additional.empty:
-                st.info("📭 Tidak ada data tambahan")
-            else:
-                st.warning(f"⚠️ Akan menghapus {len(gdf_additional)} data tambahan")
-                
-                if st.button("🗑️ HAPUS SEMUA DATA TAMBAHAN", use_container_width=True, type="secondary"):
-                    if ADDITIONAL_DATA_FILE.exists():
-                        ADDITIONAL_DATA_FILE.unlink()
-                    st.success("✅ Data tambahan dihapus!")
-                    st.rerun()
-        
-        with tab3:
             st.subheader("📥 Export Data")
             
             if not gdf.empty:
-                st.download_button(
-                    "📥 Download Semua Data",
-                    gdf.drop(columns=["source"], errors="ignore").to_json(),
-                    "data_all.geojson",
-                    "application/geo+json",
-                    use_container_width=True
-                )
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.download_button(
+                        "📥 Download sebagai GeoJSON",
+                        gdf.drop(columns=["source"], errors="ignore").to_json(),
+                        "data_all.geojson",
+                        "application/geo+json",
+                        use_container_width=True
+                    )
+                with col2:
+                    csv_data = gdf[display_cols(gdf)].to_csv(index=False)
+                    st.download_button(
+                        "📥 Download sebagai CSV",
+                        csv_data,
+                        "data_all.csv",
+                        "text/csv",
+                        use_container_width=True
+                    )
         
-        with tab4:
-            st.subheader("ℹ️ Informasi Data")
-            
-            gdf_main = load_main_data()
-            gdf_additional = load_additional_data()
+        with tab3:
+            st.subheader("ℹ️ Informasi Sistem")
             
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("📍 Data Utama (Main Database)", len(gdf_main))
+                st.metric("📊 Total Data", len(gdf))
             with col2:
-                st.metric("📤 Data Tambahan (User Upload)", len(gdf_additional))
+                st.metric("📁 Data File", DATA_FILE.name if DATA_FILE else "N/A")
             
             st.markdown("---")
-            st.markdown(f"""
-            **📁 Lokasi File:**
-            - Main data: `{DATA_FILE}`
-            - Additional data: `{ADDITIONAL_DATA_FILE}`
-            """)
+            
+            if USE_GOOGLE_DRIVE:
+                st.markdown("""
+                ### ☁️ Google Drive Integration
+                ✅ **Status:** Aktif
+                - Data otomatis di-backup ke Google Drive
+                - Saat upload/edit → langsung tersinkronisasi
+                """)
+            else:
+                st.markdown("""
+                ### ☁️ Google Drive Integration
+                ❌ **Status:** Belum dikonfigurasi
+                
+                Untuk mengaktifkan:
+                1. Create folder di Google Drive
+                2. Share dengan Service Account
+                3. Copy FOLDER_ID & credentials ke `secrets.toml`
+                """)
 
 # ════════════════════════════════════════════════════════════════════════════
 # 📍 PAGE: TENTANG
@@ -873,19 +802,33 @@ elif st.session_state.current_page == "beranda":
     st.markdown("""
     ### 📋 Tentang Platform
     
-    WebGIS Pemanfaatan Ruang adalah sistem informasi geospasial yang dirancang untuk:
+    WebGIS Pemanfaatan Ruang adalah sistem informasi geospasial yang dirancang untuk manajemen data spasial dengan integrasi Google Drive.
     
-    - 🗺️ Visualisasi data pemanfaatan ruang
-    - 📊 Analisis dan filter data
-    - 📤 Upload data tambahan via admin
-    - 🔐 Manajemen data terstruktur
+    ### ✨ Fitur Utama
     
-    ### 🎯 Cara Kerja
+    - 🗺️ **Visualisasi Peta Interaktif** - Multi-layer dengan Folium
+    - 🔍 **Filter Data Advanced** - Filter berdasarkan tahun, pemanfaatan, zonasi
+    - 📤 **Upload Data** - Support SHP, GeoJSON, KML, KMZ
+    - ☁️ **Google Drive Sync** - Backup & sinkronisasi otomatis
+    - 🔐 **Admin Panel** - Password-protected untuk data management
+    - 📊 **Data Export** - Download sebagai GeoJSON atau CSV
     
-    1. **Data Utama** → Otomatis dimuat dari folder `data/`
-    2. **Data Tambahan** → Upload via admin panel
-    3. **Peta Publik** → Semua orang bisa lihat tanpa login
-    4. **Admin Panel** → Password-protected untuk upload data baru
+    ### 📂 Struktur Data
+    
+    ```
+    data/
+    ├── DATA_PEMANFAATAN.geojson (wajib)
+    ├── Batas_Kabupaten.geojson (opsional)
+    ├── Batas_Kecamatan.geojson (opsional)
+    └── RTRW.geojson (opsional)
+    ```
+    
+    ### 🔧 Teknologi
+    
+    - **Streamlit** - Web framework
+    - **GeoPandas** - Geospatial data processing
+    - **Leafmap** - Interactive maps
+    - **Google Drive API** - Cloud storage integration
     """)
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -896,6 +839,6 @@ st.markdown("---")
 st.markdown("""
 <div class="footer">
     <p>© 2025 WebGIS Pemanfaatan Ruang — Platform Geospasial Terdepan</p>
-    <p style="font-size: 0.8rem;">Dikembangkan untuk manajemen data yang lebih baik</p>
+    <p style="font-size: 0.8rem;">Dengan Google Drive Integration ☁️</p>
 </div>
 """, unsafe_allow_html=True)
