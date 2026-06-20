@@ -43,6 +43,10 @@ RTRW_FILE       = TEMP_DIR / "RTRW.geojson"
 # 🖼️ LOGO PATH & DATA PATH - UBAH SESUAI PATH KAMU
 LOGO_PATH = r"logoupimerah.png"
 LOCAL_DATA_PATH = r"DATA PEMANFAATAN.geojson"
+LOCAL_DATA_PATH = r"RTRW.geojson"
+LOCAL_DATA_PATH = r"Batas Administrasi Kabupaten Bandung.geojson"
+LOCAL_DATA_PATH = r"Batas Admnistrasi Kecamatan Katapang.geojson"
+
 
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "admin123")
 
