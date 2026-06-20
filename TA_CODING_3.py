@@ -24,133 +24,112 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2 import service_account
 from PIL import Image
 
-# ─── GOOGLE DRIVE FUNCTIONS ──────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ⚙️ GOOGLE DRIVE SETUP
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+
+# Try to get FOLDER_ID dari secrets, default None jika tidak ada
+try:
+    FOLDER_ID = st.secrets.get("FOLDER_ID", None)
+    USE_GOOGLE_DRIVE = FOLDER_ID is not None
+except:
+    USE_GOOGLE_DRIVE = False
+    FOLDER_ID = None
+
 @st.cache_resource
 def get_drive_service():
-    creds = service_account.Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=SCOPES
-    )
-    return build("drive", "v3", credentials=creds)
+    """Get Google Drive service"""
+    try:
+        creds = service_account.Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"], scopes=SCOPES
+        )
+        return build("drive", "v3", credentials=creds)
+    except:
+        return None
 
 def get_file_id(service, filename: str):
-    """Cari file di folder Drive berdasarkan nama."""
-    results = service.files().list(
-        q=f"name='{filename}' and '{FOLDER_ID}' in parents and trashed=false",
-        fields="files(id, name)"
-    ).execute()
-    files = results.get("files", [])
-    return files[0]["id"] if files else None
+    """Cari file di folder Drive berdasarkan nama"""
+    try:
+        results = service.files().list(
+            q=f"name='{filename}' and '{FOLDER_ID}' in parents and trashed=false",
+            fields="files(id, name)"
+        ).execute()
+        files = results.get("files", [])
+        return files[0]["id"] if files else None
+    except:
+        return None
 
 def download_from_drive(service, filename: str, dest_path: pathlib.Path) -> bool:
-    """Download file dari Drive ke lokal."""
-    file_id = get_file_id(service, filename)
-    if not file_id:
+    """Download file dari Drive ke lokal"""
+    try:
+        file_id = get_file_id(service, filename)
+        if not file_id:
+            return False
+        request = service.files().get_media(fileId=file_id)
+        with open(dest_path, "wb") as f:
+            downloader = MediaIoBaseDownload(f, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+        return True
+    except:
         return False
-    request = service.files().get_media(fileId=file_id)
-    with open(dest_path, "wb") as f:
-        downloader = MediaIoBaseDownload(f, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-    return True
 
 def upload_to_drive(service, local_path: pathlib.Path, filename: str):
-    """Upload atau update file ke Google Drive."""
-    file_id = get_file_id(service, filename)
-    media   = MediaFileUpload(str(local_path), mimetype="application/geo+json", resumable=True)
-    if file_id:
-        service.files().update(fileId=file_id, media_body=media).execute()
-    else:
-        metadata = {"name": filename, "parents": [FOLDER_ID]}
-        service.files().create(body=metadata, media_body=media).execute()
-
-# ─── INISIALISASI DRIVE & DOWNLOAD FILE ──────────────────────
-drive_service = get_drive_service()
-
-FILE_MAP = {
-    "data tugas akhir.geojson"                      : DATA_FILE,
-    "Batas Administrasi Kabupaten Bandung.geojson"  : KABUPATEN_FILE,
-    "Batas Administrasi Kecamatan Katapang.geojson" : KECAMATAN_FILE,
-    "RTRW.geojson"                                  : RTRW_FILE,
-}
-
-for fname, fpath in FILE_MAP.items():
-    if not fpath.exists():
-        download_from_drive(drive_service, fname, fpath)
-
-# ─── LOAD DATA ───────────────────────────────────────────────
-@st.cache_data(ttl=0)
-def load_data():
-    path = str(DATA_FILE)
-    gdf = gpd.read_file(path)
-    if gdf.crs is None:
-        bounds = gdf.total_bounds
-        gdf = gdf.set_crs("EPSG:3857" if abs(bounds[0]) > 180 or abs(bounds[2]) > 180 else "EPSG:4326")
-    if gdf.crs.to_epsg() != 4326:
-        gdf = gdf.to_crs("EPSG:4326")
-    if "OBJECTID" not in gdf.columns:
-        gdf.insert(0, "OBJECTID", range(1, len(gdf) + 1))
-    return gdf
-
-@st.cache_data(ttl=0)
-def load_boundary(filepath: str) -> gpd.GeoDataFrame:
-    gdf = gpd.read_file(filepath)
-    if gdf.crs is None:
-        gdf = gdf.set_crs("EPSG:4326")
-    elif gdf.crs.to_epsg() != 4326:
-        gdf = gdf.to_crs("EPSG:4326")
-    gdf["geometry"] = gdf["geometry"].apply(
-        lambda geom: geom if geom is None else geom.__class__(
-            [(c[0], c[1]) for ring in (
-                [geom.exterior] + list(geom.interiors)
-                if hasattr(geom, 'exterior') else [geom]
-            ) for c in ring.coords]
-        ) if hasattr(geom, 'exterior') else geom
-    )
-    return gdf
-
-def save_data(gdf: gpd.GeoDataFrame):
-    """Simpan GeoDataFrame ke lokal lalu upload ke Google Drive."""
-    if gdf.crs is None:
-        gdf = gdf.set_crs("EPSG:4326")
-    elif gdf.crs.to_epsg() != 4326:
-        gdf = gdf.to_crs("EPSG:4326")
-    gdf.to_file(str(DATA_FILE), driver="GeoJSON")
-    upload_to_drive(drive_service, DATA_FILE, "data tugas akhir.geojson")
-    st.cache_data.clear()
-
-
-def read_shp_from_zip(uploaded_zip) -> gpd.GeoDataFrame:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        zip_path = os.path.join(tmpdir, "up.zip")
-        with open(zip_path, "wb") as f:
-            f.write(uploaded_zip.read())
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(tmpdir)
-        shp_files = list(Path(tmpdir).rglob("*.shp"))
-        if not shp_files:
-            raise ValueError("Tidak ada file .shp di dalam ZIP.")
-        shp = gpd.read_file(str(shp_files[0]))
-        if shp.crs is None:
-            bounds = shp.total_bounds
-            if abs(bounds[0]) > 180 or abs(bounds[2]) > 180:
-                st.warning("⚠️ CRS diasumsikan EPSG:3857.")
-                shp = shp.set_crs("EPSG:3857")
-            else:
-                st.warning("⚠️ CRS diasumsikan EPSG:4326.")
-                shp = shp.set_crs("EPSG:4326")
-        if shp.crs.to_epsg() != 4326:
-            shp = shp.to_crs("EPSG:4326")
-        if "OBJECTID" not in shp.columns:
-            shp.insert(0, "OBJECTID", range(1, len(shp) + 1))
-        return shp
-
-def center_map(gdf: gpd.GeoDataFrame):
+    """Upload atau update file ke Google Drive"""
     try:
-        c = gdf.geometry.unary_union.centroid
-        return [c.y, c.x], 15
-    except Exception:
-        return [-6.99, 107.55], 13
+        file_id = get_file_id(service, filename)
+        media = MediaFileUpload(str(local_path), mimetype="application/geo+json", resumable=True)
+        if file_id:
+            service.files().update(fileId=file_id, media_body=media).execute()
+        else:
+            metadata = {"name": filename, "parents": [FOLDER_ID]}
+            service.files().create(body=metadata, media_body=media).execute()
+        return True
+    except Exception as e:
+        st.error(f"Gagal upload ke Drive: {str(e)}")
+        return False
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 📁 DATA PATHS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+
+TEMP_DIR = pathlib.Path(tempfile.gettempdir()) / "webgis_cache"
+TEMP_DIR.mkdir(exist_ok=True)
+
+# ✅ Flexible file naming - cek semua kemungkinan nama file
+def find_geojson_file(directory, patterns):
+    """Cari file geojson dengan berbagai kemungkinan nama"""
+    for pattern in patterns:
+        files = list(Path(directory).glob(pattern))
+        if files:
+            return files[0]
+    return None
+
+# Data utama - cek berbagai nama
+DATA_FILE = find_geojson_file(DATA_DIR, [
+    "DATA PEMANFAATAN.geojson"
+])
+
+# Batas Kabupaten - cek berbagai nama
+KABUPATEN_FILE = find_geojson_file(DATA_DIR, [
+    "Batas Administrasi Kabupaten Bandung.geojson"
+])
+
+# Batas Kecamatan - cek berbagai nama
+KECAMATAN_FILE = find_geojson_file(DATA_DIR, [
+    "Batas Administrasi Kecamatan Katapang.geojson"
+])
+
+# RTRW - cek berbagai nama
+RTRW_FILE = find_geojson_file(DATA_DIR, [
+    "RTRW.geojson"
+])
 
 # 🖼️ LOGO
 LOGO_PATH = r"logoupimerah.png"
@@ -821,8 +800,7 @@ elif st.session_state.current_page == "beranda":
     - ☁️ **Google Drive Sync** - Backup & sinkronisasi otomatis
     - 🔐 **Admin Panel** - Password-protected untuk data management
     - 📊 **Data Export** - Download sebagai GeoJSON atau CSV
-    
-    
+
     ### 🔧 Teknologi
     
     - **Streamlit** - Web framework
